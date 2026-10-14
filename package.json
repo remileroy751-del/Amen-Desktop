@@ -1,0 +1,49 @@
+{
+  "name": "amen-connect-admin",
+  "productName": "AMEN CONNECT Admin",
+  "version": "1.1.0",
+  "description": "Collège AMEN — AMEN-CONNECT : interface Super Admin Direction (version bureau Windows)",
+  "author": "Collège AMEN",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "postinstall": "node scripts/copy-vendor.js",
+    "start": "electron .",
+    "test": "node test/offline-layer.test.js",
+    "dist": "electron-builder --win --x64 --publish never"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "jspdf": "2.5.1"
+  },
+  "build": {
+    "appId": "com.collegeamen.amenconnect.admin",
+    "productName": "AMEN CONNECT Admin",
+    "copyright": "Collège AMEN",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "package.json", "renderer/**/*"],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AMEN CONNECT Admin",
+      "language": "1036",
+      "artifactName": "AMEN-CONNECT-Admin-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "AMEN-CONNECT-Admin-Portable-${version}.${ext}"
+    }
+  }
+}
