@@ -162,12 +162,28 @@
       if (was !== true) { emit(); if (state.pending > 0) setTimeout(flush, 300); }
     }
     function noteOffline() { if (state.online !== false) { state.online = false; emit(); } }
+    var probeDelay = o.probeRetryDelay === undefined ? 700 : o.probeRetryDelay;
     async function probe() {
-      try {
-        await withTimeout(fetchFn(url + '/auth/v1/health', { headers: { apikey: key }, cache: 'no-store' }), 6000);
-        noteOnline(); return true;
-      } catch (e) { noteOffline(); return false; }
+      var lastErr = '';
+      for (var n = 0; n < 2; n++) {
+        try {
+          var r = await withTimeout(Promise.resolve(fetchFn(url + '/auth/v1/health', o.desktop ? { method: 'GET', headers: { apikey: key } } : { mode: 'no-cors', cache: 'no-store' })), 8000);
+          state.diag = { ok: true, status: r && r.status, at: Date.now() };
+          noteOnline(); return true;
+        } catch (e) {
+          lastErr = String((e && e.message) || e);
+          if (n === 0 && probeDelay) await new Promise(function (res) { setTimeout(res, probeDelay); });
+        }
+      }
+      state.diag = { ok: false, error: lastErr, at: Date.now() };
+      noteOffline(); return false;
     }
+    // Une requête a échoué : vrai hors-ligne (true) ou serveur joignable mais requête en erreur (false) ?
+    async function trulyOffline(err) {
+      state.lastError = String((err && err.message) || err || '');
+      return !(await probe());
+    }
+    function isTimeout(e) { return /timeout/i.test(String((e && e.message) || e || '')); }
 
     // ---- noms (pour afficher les jointures des éléments créés hors ligne)
     var NAME_FIELD = { classes: 'name', subjects: 'name', teachers: 'full_name', parents: 'full_name', students: 'full_name' };
@@ -358,8 +374,8 @@
         try {
           var res = await execRaw(op, args);
           if (!res.error || !isNetErr(res.error)) { noteOnline(); return res; }
-          noteOffline();
-        } catch (e) { if (!isNetErr(e)) throw e; noteOffline(); }
+          if (!(await trulyOffline(res.error))) return res;
+        } catch (e) { if (!isNetErr(e)) throw e; if (!(await trulyOffline(e))) return { data: null, error: { message: String(e.message || e) } }; }
       }
       op.args = args;
       return enqueue(op);
@@ -374,7 +390,7 @@
         try {
           var b = raw.from(table);
           calls.forEach(function (c) { b = b[c[0]].apply(b, c[1]); });
-          var res = await withTimeout(Promise.resolve(b), 9000);
+          var res = await withTimeout(Promise.resolve(b), 25000);
           if (!res.error) {
             noteOnline();
             if (state.authed) { await store.set('cache', k, { data: res.data, ts: Date.now() }); learn(table, res.data); }
@@ -385,8 +401,11 @@
             return res;
           }
           if (!isNetErr(res.error)) return res;
-          noteOffline();
-        } catch (e) { if (!isNetErr(e)) throw e; noteOffline(); }
+          if (!(await trulyOffline(res.error)) && !isTimeout(res.error)) return res;
+        } catch (e) {
+          if (!isNetErr(e)) throw e;
+          if (!(await trulyOffline(e)) && !isTimeout(e)) return { data: null, error: { message: String(e.message || e) } };
+        }
       }
       var c = await store.get('cache', k);
       if (!c) return { data: null, error: { message: 'Hors connexion : ces données ne sont pas encore disponibles sur cet ordinateur (ouvrez-les une fois avec Internet).' } };
@@ -400,15 +419,18 @@
       var pend = (await listOps()).filter(function (x) { return x.status === 'pending'; });
       if (state.online !== false) {
         try {
-          var res = await withTimeout(Promise.resolve(raw.rpc(name, args)), 9000);
+          var res = await withTimeout(Promise.resolve(raw.rpc(name, args)), 25000);
           if (!res.error) {
             noteOnline();
             if (state.authed) await store.set('cache', k, { data: res.data, ts: Date.now() });
             return name === 'admin_access_codes' && pend.length ? { data: codesOverlay(res.data, pend), error: null } : res;
           }
           if (!isNetErr(res.error)) return res;
-          noteOffline();
-        } catch (e) { if (!isNetErr(e)) throw e; noteOffline(); }
+          if (!(await trulyOffline(res.error)) && !isTimeout(res.error)) return res;
+        } catch (e) {
+          if (!isNetErr(e)) throw e;
+          if (!(await trulyOffline(e)) && !isTimeout(e)) return { data: null, error: { message: String(e.message || e) } };
+        }
       }
       var c = await store.get('cache', k);
       if (!c) return { data: name === 'admin_access_codes' ? codesOverlay([], pend) : null, error: null, offline: true };
@@ -422,8 +444,8 @@
       if (name === 'admin_access_codes') return runRpcRead(name, args);
       if (name === 'bootstrap_admin') {
         if (state.online !== false) {
-          try { var r = await raw.rpc(name, args); if (!r.error || !isNetErr(r.error)) return r; noteOffline(); }
-          catch (e) { if (!isNetErr(e)) throw e; noteOffline(); }
+          try { var r = await raw.rpc(name, args); if (!r.error || !isNetErr(r.error)) return r; if (!(await trulyOffline(r.error))) return r; }
+          catch (e) { if (!isNetErr(e)) throw e; if (!(await trulyOffline(e))) return { data: null, error: { message: String(e.message || e) } }; }
         }
         return { data: { success: true, offline: true }, error: null };
       }
@@ -477,7 +499,7 @@
     }
     async function offlineLogin(cred) {
       await ready();
-      var bad = { data: { user: null, session: null }, error: { message: 'Connexion hors ligne impossible : une première connexion avec Internet est nécessaire sur cet ordinateur, avec ces identifiants.' } };
+      var bad = { data: { user: null, session: null }, error: { message: 'Pas de connexion Internet. Lors de la première utilisation, la connexion à Internet est obligatoire sur cet ordinateur ; ensuite, la connexion hors ligne fonctionne avec les mêmes identifiants.' } };
       if (!authInfo || !authInfo.hash) return bad;
       if (String(cred.email).trim().toLowerCase() !== authInfo.email) return bad;
       if (Date.now() - (authInfo.lastOnline || 0) > OFFLINE_LOGIN_MAX_DAYS * 86400000) {
@@ -496,8 +518,11 @@
           var r = await raw.auth.signInWithPassword(cred);
           if (!r.error && r.data && r.data.user) { state.authed = true; await saveVerifier(cred.email, cred.password, r.data.user); noteOnline(); return r; }
           if (r.error && !isNetErr(r.error)) return r;
-          noteOffline();
-        } catch (e) { if (!isNetErr(e)) throw e; noteOffline(); }
+          if (r.error && !(await trulyOffline(r.error))) return { data: { user: null, session: null }, error: { message: 'Le serveur est joignable mais la requête de connexion a échoué : ' + r.error.message } };
+        } catch (e) {
+          if (!isNetErr(e)) throw e;
+          if (!(await trulyOffline(e))) return { data: { user: null, session: null }, error: { message: 'Le serveur est joignable mais la requête de connexion a échoué : ' + (e.message || e) } };
+        }
         return offlineLogin(cred);
       },
       async getSession() {
@@ -518,7 +543,7 @@
           if (!r.error) { state.authed = true; return r; }
           if (!isNetErr(r.error)) return r;
         } catch (e) { if (!isNetErr(e)) throw e; }
-        noteOffline();
+        if (await probe()) return { data: { user: null }, error: { message: 'Le serveur est joignable mais la vérification de session a échoué.' } };
         if (authInfo && authInfo.active) { state.authed = true; return { data: { user: authInfo.user }, error: null }; }
         return { data: { user: null }, error: { message: 'Hors connexion.' } };
       },
@@ -567,7 +592,7 @@
           if (hasTmp(args)) { await markFailed(op, 'Élément lié introuvable (sa création a échoué ou a été annulée).'); out.failed++; continue; }
           var res;
           try { res = await execRaw(op, args); } catch (e) { res = { error: { message: String((e && e.message) || e) } }; }
-          if (res.error && isNetErr(res.error)) { noteOffline(); out.stopped = 'offline'; break; }
+          if (res.error && isNetErr(res.error)) { state.lastError = res.error.message; out.stopped = (await probe()) ? 'error' : 'offline'; break; }
           if (res.error && isAuthErr(res.error) && !reauthTried) {
             reauthTried = true;
             if (await ensureSession(true, true)) { i--; continue; }
@@ -678,6 +703,13 @@
       else if (s.pending > 0) { txt = '⏳ ' + s.pending + ' en attente de synchronisation'; bg = '#2563A8'; }
       else { txt = '● En ligne · à jour'; bg = '#2F6B2F'; }
       pill.textContent = txt; pill.style.background = bg;
+      pill.title = diagText(s);
+    }
+    function diagText(s) {
+      var d = s.diag, t = [];
+      if (d) t.push('Test réseau : ' + (d.ok ? 'serveur joignable' + (d.status ? ' (HTTP ' + d.status + ')' : '') : 'échec — ' + d.error));
+      if (s.lastError) t.push('Dernière erreur de requête : ' + s.lastError);
+      return t.join('\n') || 'Cliquez pour voir la synchronisation';
     }
     function modal(html) {
       var wrap = el('div'); wrap.className = 'modal'; wrap.style.zIndex = '97';
@@ -695,7 +727,7 @@
           '</td><td>' + (op.status === 'failed' ? '<button class="btn red small" data-discard="' + esc(op.key) + '">Abandonner</button>' : '') + '</td></tr>';
       }).join('') || '<tr><td colspan="4" class="empty">Aucune modification en attente. Tout est synchronisé.</td></tr>';
       var w = modal('<h2>Synchronisation</h2><p class="muted">' + (L.state.online === false ? 'Hors connexion : vos saisies sont enregistrées sur cet ordinateur et seront envoyées automatiquement au retour d’Internet.' : 'Connecté à Internet.') +
-        '</p><div style="overflow:auto;max-height:50vh"><table><thead><tr><th>Date</th><th>Modification</th><th>Statut</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        '</p><p class="hint" style="white-space:pre-line">' + esc(diagText(L.state)) + '</p><div style="overflow:auto;max-height:50vh"><table><thead><tr><th>Date</th><th>Modification</th><th>Statut</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
         '<div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn ghost" data-close>Fermer</button><button class="btn" data-sync>Synchroniser maintenant</button></div>');
       w.addEventListener('click', async function (e) {
         var t = e.target;
@@ -723,10 +755,30 @@
     };
   }
 
+  // Requêtes réseau via le processus principal d'Electron (pile réseau Chromium système : proxy, DNS, pas de CORS).
+  function makeDesktopFetch() {
+    if (!(root.desktop && typeof root.desktop.fetch === 'function')) return null;
+    var native = root.fetch.bind(root);
+    return async function (input, init) {
+      init = init || {};
+      if (typeof input !== 'string' || (init.body != null && typeof init.body !== 'string')) return native(input, init);
+      var headers = {}, h = init.headers;
+      if (h) {
+        if (Array.isArray(h)) h.forEach(function (kv) { headers[kv[0]] = kv[1]; });
+        else if (typeof h.forEach === 'function') h.forEach(function (v, k) { headers[k] = v; });
+        else Object.assign(headers, h);
+      }
+      var r = await root.desktop.fetch({ url: input, method: init.method || 'GET', headers: headers, body: init.body == null ? null : init.body });
+      if (!r.ok) throw new TypeError('Failed to fetch (' + r.error + ')');
+      var nullBody = r.status === 204 || r.status === 205 || r.status === 304;
+      return new Response(nullBody ? null : r.body, { status: r.status, statusText: r.statusText, headers: r.headers });
+    };
+  }
+
   function install(rawClient, url, key) {
     var layer;
     var hooks = browserHooks(function () { return layer; });
-    layer = createLayer({ raw: rawClient, url: url, key: key, store: typeof indexedDB !== 'undefined' ? idbStore() : memoryStore(), hooks: hooks });
+    layer = createLayer({ raw: rawClient, url: url, key: key, desktop: !!root.__amenDesktopFetch, fetch: root.__amenDesktopFetch || undefined, store: typeof indexedDB !== 'undefined' ? idbStore() : memoryStore(), hooks: hooks });
     root.AmenOffline = layer;
     layer.start();
     document.addEventListener('DOMContentLoaded', function () {
@@ -750,6 +802,11 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root.supabase && typeof root.supabase.createClient === 'function' && typeof document !== 'undefined') {
     var orig = root.supabase.createClient.bind(root.supabase);
-    root.supabase.createClient = function (url, key, opts) { return install(orig(url, key, opts), url, key); };
+    root.supabase.createClient = function (url, key, opts) {
+      var df = makeDesktopFetch();
+      root.__amenDesktopFetch = df;
+      if (df) { opts = Object.assign({}, opts); opts.global = Object.assign({}, opts.global, { fetch: df }); }
+      return install(orig(url, key, opts), url, key);
+    };
   }
 })(typeof window !== 'undefined' ? window : globalThis);

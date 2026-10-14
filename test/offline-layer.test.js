@@ -36,7 +36,7 @@ function makeServer() {
         return (...args) => { st.calls.push([p, args]); return b; };
       } });
       const exec = async () => {
-        if (!srv.online) return NET;
+        if (!srv.online || srv.rawFail) return NET;
         const e = authErr(); if (e) return e;
         srv.calls.push(['from', table, st.calls.map(c => c[0]).join('.')]);
         const has = n => st.calls.some(c => c[0] === n);
@@ -47,7 +47,7 @@ function makeServer() {
       return b;
     },
     async rpc(nm, args) {
-      if (!srv.online) return NET;
+      if (!srv.online || srv.rawFail) return NET;
       const e = authErr(); if (e) return e;
       srv.calls.push(['rpc', nm]);
       try { return { data: rpcs[nm](args), error: null }; } catch (err) { return { data: null, error: { message: err.message } }; }
@@ -82,7 +82,7 @@ const test = async (title, fn) => { try { await fn(); passed++; console.log('  �
   const srv = makeServer(), store = memoryStore();
   const synced = [];
   const hooks = { onSynced: async o => synced.push(o), askPassword: async () => 'secret' };
-  const L = createLayer({ raw: srv.raw, url: 'http://x', key: 'k', store, fetch: srv.fetch, noTimers: true, hooks });
+  const L = createLayer({ raw: srv.raw, url: 'http://x', key: 'k', store, fetch: srv.fetch, noTimers: true, probeRetryDelay: 0, hooks });
   await L.ready();
 
   await test('connexion en ligne + lecture initiale mise en cache', async () => {
@@ -148,7 +148,7 @@ const test = async (title, fn) => { try { await fn(); passed++; console.log('  �
   });
 
   await test('hors connexion : redémarrage — la file d’attente persiste', async () => {
-    const L2 = createLayer({ raw: srv.raw, url: 'http://x', key: 'k', store, fetch: srv.fetch, noTimers: true, hooks });
+    const L2 = createLayer({ raw: srv.raw, url: 'http://x', key: 'k', store, fetch: srv.fetch, noTimers: true, probeRetryDelay: 0, hooks });
     await L2.ready();
     assert.equal(L2.state.pending, 6);
     L2._internal.setOnline(false);
@@ -211,9 +211,25 @@ const test = async (title, fn) => { try { await fn(); passed++; console.log('  �
     assert.ok(srv.db.teachers.some(t => t.full_name === 'M. Reauth'));
   });
 
+  await test('serveur joignable mais requêtes en échec : pas de faux « hors connexion », rien n’est mis en file', async () => {
+    srv.online = true; srv.rawFail = true; srv.sessionOk = true;
+    await L.probe();
+    const before = L.state.pending;
+    const w = await L.client.rpc('admin_create_teacher', { p_full_name: 'M. Fantome', p_phone: null });
+    assert.ok(w.error, 'l’erreur réelle est renvoyée');
+    assert.equal(L.state.pending, before);
+    const r = await Q.classes(L);
+    assert.ok(r.error && !r.offline);
+    assert.equal(L.state.online, true, 'l’indicateur reste « en ligne »');
+    assert.ok(L.state.lastError);
+    const li = await L.client.auth.signInWithPassword({ email: 'dir@amen.tg', password: 'wrongpw' });
+    assert.ok(li.error);
+    srv.rawFail = false;
+  });
+
   await test('connexion hors ligne : bon mot de passe accepté, mauvais refusé, getUser local', async () => {
     srv.online = false;
-    const L3 = createLayer({ raw: srv.raw, url: 'http://x', key: 'k', store, fetch: srv.fetch, noTimers: true, hooks });
+    const L3 = createLayer({ raw: srv.raw, url: 'http://x', key: 'k', store, fetch: srv.fetch, noTimers: true, probeRetryDelay: 0, hooks });
     await L3.ready();
     const bad = await L3.client.auth.signInWithPassword({ email: 'dir@amen.tg', password: 'nope' });
     assert.ok(bad.error);
@@ -232,7 +248,7 @@ const test = async (title, fn) => { try { await fn(); passed++; console.log('  �
   await test('un appel anonyme (avant connexion) n’écrase pas le cache', async () => {
     srv.online = true;
     const S2 = makeServer(), st2 = memoryStore();
-    const A = createLayer({ raw: S2.raw, url: 'http://x', key: 'k', store: st2, fetch: S2.fetch, noTimers: true, hooks });
+    const A = createLayer({ raw: S2.raw, url: 'http://x', key: 'k', store: st2, fetch: S2.fetch, noTimers: true, probeRetryDelay: 0, hooks });
     await A.ready();
     S2.db.classes.length = 0;
     await Q.classes(A); // non authentifié : pas de mise en cache

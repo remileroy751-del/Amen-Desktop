@@ -16,8 +16,8 @@ empaquetée avec Electron. Elle utilise la même base Supabase que l'application
    (ou simplement un `push` sur la branche `main`).
 3. Une fois terminé (environ 3 à 6 minutes), ouvrez l'exécution et téléchargez l'artefact
    **AMEN-CONNECT-Admin-Windows** (un zip) en bas de la page. Il contient :
-   - `AMEN-CONNECT-Admin-Setup-1.1.0.exe` : installateur (choix du dossier, raccourcis Bureau et menu Démarrer) ;
-   - `AMEN-CONNECT-Admin-Portable-1.1.0.exe` : version portable, sans installation.
+   - `AMEN-CONNECT-Admin-Setup-1.1.1.exe` : installateur (choix du dossier, raccourcis Bureau et menu Démarrer) ;
+   - `AMEN-CONNECT-Admin-Portable-1.1.1.exe` : version portable, sans installation.
 
 Pour publier une version téléchargeable dans l'onglet *Releases* : créez un tag, par exemple `v1.0.0`
 (`git tag v1.0.0 && git push --tags`). Pensez à mettre le même numéro dans `package.json` (`"version"`).
@@ -42,6 +42,19 @@ npm run dist       # génère les exécutables dans dist/
 - Menu en français, zoom (Ctrl +/−/0), plein écran (F11), instance unique, mémorisation de la taille de la fenêtre.
 - Bandeau d'alerte si la connexion Internet est coupée.
 - Icône : logo du Collège AMEN (`build/icon.ico`).
+
+## Fonctionnement en ligne par défaut (v1.1.1)
+
+L'application travaille **en ligne par défaut** : toutes les lectures et écritures vont directement à Supabase.
+Le stockage local n'intervient qu'**en secours**, quand Internet est réellement injoignable.
+
+- **Juste après l'installation, une connexion Internet est obligatoire** pour la première connexion
+  (chargement des données + mémorisation de l'accès hors ligne).
+- Les requêtes vers Supabase sont exécutées par le cœur d'Electron (réseau Windows : proxy, DNS, certificats),
+  sans les restrictions de sécurité d'une page web ouverte depuis un fichier.
+- Le voyant « Hors connexion » n'apparaît que si le test réseau échoue 2 fois de suite. Si le serveur répond mais
+  qu'une requête est refusée, l'application affiche **l'erreur réelle** au lieu de passer en mode hors ligne.
+- Diagnostic : survolez ou cliquez sur le voyant en bas à gauche (résultat du dernier test réseau et dernière erreur).
 
 ## Mode hors connexion (v1.1)
 

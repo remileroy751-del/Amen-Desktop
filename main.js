@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, shell, dialog, ipcMain, session, screen } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, ipcMain, session, screen, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -164,6 +164,31 @@ if (!app.requestSingleInstanceLock()) {
       item.once('done', (_ev, state) => {
         if (state === 'completed') shell.showItemInFolder(item.getSavePath());
       });
+    });
+
+    // Requêtes réseau vers Supabase effectuées ici (pile réseau Chromium : proxy Windows, DNS, certificats).
+    ipcMain.handle('net-fetch', async (e, req) => {
+      try {
+        if (!e.senderFrame || !String(e.senderFrame.url).startsWith('file://')) return { ok: false, error: 'origine non autorisée' };
+        const u = new URL(req.url);
+        if (u.protocol !== 'https:' || !/\.supabase\.(co|in)$/i.test(u.hostname)) return { ok: false, error: 'hôte non autorisé' };
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 30000);
+        try {
+          const res = await net.fetch(req.url, {
+            method: req.method || 'GET',
+            headers: req.headers || {},
+            body: req.body == null ? undefined : req.body,
+            signal: ctl.signal
+          });
+          const buf = new Uint8Array(await res.arrayBuffer());
+          const headers = {};
+          res.headers.forEach((v, k) => { if (!['content-encoding', 'content-length', 'transfer-encoding'].includes(k.toLowerCase())) headers[k] = v; });
+          return { ok: true, status: res.status, statusText: res.statusText, headers, body: buf };
+        } finally { clearTimeout(timer); }
+      } catch (err) {
+        return { ok: false, error: String((err && err.message) || err) };
+      }
     });
 
     ipcMain.handle('app-version', () => app.getVersion());
